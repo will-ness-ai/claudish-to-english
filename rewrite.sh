@@ -14,13 +14,13 @@
 # message is known.
 #
 # On the final chunk we also read the RECENT CONVERSATION from
-# .transcript_path (the last CLAUDISH_CONTEXT_MSGS user/assistant messages,
-# oldest first) and pass it to the model as CONTEXT ONLY — it helps the rewrite
-# stay on-topic. The excerpt tells the model how many earlier messages are not
-# shown, so it knows the conversation is longer than what it sees. The model is
-# told never to rewrite, answer, or repeat that context; only the assistant
-# message is rewritten. Missing/unreadable transcript -> no context, still
-# rewrites.
+# .transcript_path — the user's newest question with the replies to it so far,
+# then the CLAUDISH_CONTEXT_TURNS exchanges before it, oldest first — and pass
+# it to the model as CONTEXT ONLY, which helps the rewrite stay on-topic. The
+# excerpt counts every message it leaves out, so the model knows the
+# conversation is longer than what it sees. The model is told never to rewrite,
+# answer, or repeat that context; only the assistant message is rewritten.
+# Missing/unreadable transcript -> no context, still rewrites.
 #
 # FAIL-OPEN CONTRACT: on ANY problem (disabled, no jq, parse error, LLM down,
 # timeout, empty rewrite) we emit nothing and exit 0, which leaves Claude's
@@ -41,13 +41,15 @@
 #   CLAUDISH_STUB      1|0            deterministic stub instead of ollama
 #                                           (for display-mechanics testing)
 #   CLAUDISH_TIMEOUT   <seconds>      LLM client timeout (default 45)
-#   CLAUDISH_CONTEXT_MSGS  <n>        recent user/assistant messages sent as
-#                                          context; 0 sends none (default 5)
+#   CLAUDISH_CONTEXT   1|0            send recent conversation as context
+#                                          (default 1); 0 sends the message alone
+#   CLAUDISH_CONTEXT_TURNS <n>        exchanges before the current one to
+#                                          include, compressed to their user
+#                                          message and final reply (default 5)
+#   CLAUDISH_CONTEXT_TURN_MSGS <n>    replies kept from the CURRENT exchange,
+#                                          newest first (default 3)
 #   CLAUDISH_CONTEXT_CHARS <n>        per-message truncation inside that
 #                                          context (default 800)
-#   CLAUDISH_CONTEXT_KEEP_USER 1|0    when the recent window holds no user
-#                                          message (long tool runs push it out),
-#                                          add the newest one anyway (default 1)
 #   CLAUDISH_DEBUG     1|0            write a debug log (default 0)
 #   CLAUDISH_NOTICE    1|0            once-per-session on-screen notice when the
 #                                           rewrite is skipped because ollama is
@@ -67,16 +69,18 @@ OLLAMA="${CLAUDISH_OLLAMA:-http://localhost:11434}"
 MIN_CHARS="${CLAUDISH_MIN_CHARS:-200}"
 STUB="${CLAUDISH_STUB:-0}"
 LLM_TIMEOUT="${CLAUDISH_TIMEOUT:-45}"
-CTX_MSGS="${CLAUDISH_CONTEXT_MSGS:-5}"
+CTX_ON="${CLAUDISH_CONTEXT:-1}"
+CTX_TURNS="${CLAUDISH_CONTEXT_TURNS:-5}"
+CTX_TURN_MSGS="${CLAUDISH_CONTEXT_TURN_MSGS:-3}"
 CTX_CHARS="${CLAUDISH_CONTEXT_CHARS:-800}"
-CTX_KEEP_USER="${CLAUDISH_CONTEXT_KEEP_USER:-1}"
 DEBUG="${CLAUDISH_DEBUG:-0}"
 NOTICE="${CLAUDISH_NOTICE:-1}"
 
 # jq gets these as --argjson numbers, so a non-numeric value must not reach it.
-case "$CTX_MSGS"      in ''|*[!0-9]*) CTX_MSGS=5    ;; esac
+case "$CTX_ON"        in 0|1) ;; *) CTX_ON=1        ;; esac
+case "$CTX_TURNS"     in ''|*[!0-9]*) CTX_TURNS=5   ;; esac
+case "$CTX_TURN_MSGS" in ''|*[!0-9]*) CTX_TURN_MSGS=3 ;; esac
 case "$CTX_CHARS"     in ''|*[!0-9]*) CTX_CHARS=800 ;; esac
-case "$CTX_KEEP_USER" in 0|1) ;; *) CTX_KEEP_USER=1 ;; esac
 
 BUF_ROOT="${TMPDIR:-/tmp}/claudish-to-english"
 SEP=$'\n\n────────────────────────\n💬 In plain English:\n\n'
@@ -174,20 +178,49 @@ if [ "$STUB" = "1" ]; then
 else
   sys="You rewrite the assistant's message into much simpler, plain English. Keep every fact, name, number, and file path. Use short sentences and everyday words. Leave fenced code blocks unchanged. Output ONLY the rewritten message with no preamble, labels, or commentary."
 
-  # Context only: the recent conversation, oldest first. One assistant message
-  # spans several transcript lines that share .message.id, so lines are merged
-  # by id; blocks that are not text (thinking, tool_use, tool_result) hold no
-  # prose and drop out, as do sidechain (subagent) and meta lines. The message
-  # being rewritten is excluded — it is the payload, not context. Truncation
-  # happens inside jq, which is safe on multibyte boundaries.
+  # Context only: the current exchange (the user's newest question and the
+  # replies to it so far), plus the CLAUDISH_CONTEXT_TURNS exchanges before it.
+  #
+  # An exchange starts at a user message and runs to the next one. Older
+  # exchanges are compressed to their user message and final reply, because the
+  # replies between those are tool-step preambles that add length without
+  # grounding. Every message left out is counted, so the model is told the
+  # excerpt is partial rather than being left to assume it is whole.
+  #
+  # One assistant message spans several transcript lines that share
+  # .message.id, so lines are merged by id; blocks that are not text (thinking,
+  # tool_use, tool_result) hold no prose and drop out, as do sidechain
+  # (subagent) and meta lines. The message being rewritten is excluded — it is
+  # the payload, not context. Truncation happens inside jq, which is safe on
+  # multibyte boundaries.
   convo=""
-  if [ -n "$tpath" ] && [ -f "$tpath" ] && [ "$CTX_MSGS" -gt 0 ]; then
-    convo="$(jq -rs --argjson n "$CTX_MSGS" --argjson c "$CTX_CHARS" \
-                    --argjson keepuser "$CTX_KEEP_USER" --arg mid "$mid" '
+  if [ -n "$tpath" ] && [ -f "$tpath" ] && [ "$CTX_ON" = "1" ]; then
+    convo="$(jq -rs --argjson t "$CTX_TURNS" --argjson tm "$CTX_TURN_MSGS" \
+                    --argjson c "$CTX_CHARS" --arg mid "$mid" '
       def txt:
         if (.message.content | type) == "string" then .message.content
         else [ .message.content[]? | select(.type == "text") | .text // "" ] | join("\n")
         end;
+      def fmt:
+        "[" + .role + "] "
+        + (.text | if length > $c then .[0:$c] + " […truncated]" else . end);
+      def render($current):
+        (.[0].role == "user") as $hasu
+        | (if $hasu then [ .[0] ] else [] end) as $head
+        | (if $hasu then .[1:] else . end) as $rest
+        | (if $current
+           then (if $tm < 1 then []                                    # .[-0:] is .[0:], so 0 needs its own branch
+                 elif ($rest | length) > $tm then $rest[-$tm:]
+                 else $rest end)
+           else (if ($rest | length) > 1 then $rest[-1:] else $rest end)
+           end) as $kept
+        | (($rest | length) - ($kept | length)) as $cut
+        | { n: (($head | length) + ($kept | length)),
+            lines: ( ($head | map(fmt))
+                     + (if $cut > 0
+                        then [ "[… \($cut) more repl\(if $cut == 1 then "y" else "ies" end) in this exchange, not shown]" ]
+                        else [] end)
+                     + ($kept | map(fmt)) ) };
       [ .[]
         | select((.type == "user" or .type == "assistant")
                  and (.isMeta // false) == false
@@ -202,29 +235,27 @@ else
           end)
       | map(select(.id != $mid))
       | length as $total
-      | (if $total > $n then .[($total - $n):] else . end) as $recent
-      | ( if $keepuser == 1 and ([ $recent[] | select(.role == "user") ] | length) == 0
-          then ([ .[] | select(.role == "user") ] | if length > 0 then [ .[-1] ] else [] end) + $recent
-          else $recent
-          end ) as $shown
-      | ($total - ($shown | length)) as $omitted
-      | if ($shown | length) == 0 then ""
+      | [ foreach .[] as $m (0;
+            . + (if $m.role == "user" then 1 else 0 end);
+            { ex: ., msg: $m }) ]
+      | group_by(.ex)
+      | map(map(.msg))
+      | (if length > ($t + 1) then .[-($t + 1):] else . end)
+      | length as $ng
+      | [ to_entries[] | . as $e | ($e.value | render($e.key == $ng - 1)) ]
+      | ([ .[].n ] | add // 0) as $shown
+      | ($total - $shown) as $hidden
+      | if $shown == 0 then ""
         else
-          "Recent conversation, oldest first"
-          + (if $omitted > 0
-             then " — \($shown | length) of \($total) messages; \($omitted) earlier message(s) are not shown"
-             else " — the whole conversation so far"
-             end)
-          + ":\n\n"
-          + ( $shown
-              | map("[" + .role + "] "
-                    + (.text | if length > $c then .[0:$c] + " […truncated]" else . end))
-              | join("\n\n") )
+          "Recent conversation, oldest first. It shows \($shown) of the \($total) messages in this session"
+          + (if $hidden > 0 then "; \($hidden) message(s) are not shown" else "" end)
+          + ".\n\n"
+          + ([ .[].lines[] ] | join("\n\n"))
         end' "$tpath" 2>/dev/null)"
   fi
   if [ -n "$convo" ]; then
     sys="$sys"$'\n\n'"$convo"$'\n\n'"Use this context only to understand the message. Do NOT rewrite, answer, or repeat any of it — rewrite only the assistant's message that follows."
-    dbg "context: convo_bytes=${#convo} msgs=$CTX_MSGS"
+    dbg "context: convo_bytes=${#convo} turns=$CTX_TURNS turn_msgs=$CTX_TURN_MSGS"
   fi
 
   req="$(jq -n --arg m "$MODEL" --arg s "$sys" --arg u "$full" \

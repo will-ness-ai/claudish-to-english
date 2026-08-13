@@ -149,28 +149,48 @@ and passes it to the model as **context only** — to keep the rewrite on-topic.
 The model is told never to answer or repeat that context; it only rewrites the
 assistant's message.
 
-The excerpt holds the last `CLAUDISH_CONTEXT_MSGS` messages (default 5), oldest
-first, and each one is cut to `CLAUDISH_CONTEXT_CHARS` characters (default 800).
-The header line states how many earlier messages are **not** shown, so the model
-knows the conversation is longer than the part it sees:
+The excerpt is built from **exchanges**, not from a flat count of messages. An
+exchange starts at a user message and runs to the next one. It holds:
+
+- the **current exchange** — the user's newest question, plus the last
+  `CLAUDISH_CONTEXT_TURN_MSGS` replies to it so far (default 3);
+- the `CLAUDISH_CONTEXT_TURNS` exchanges before it (default 5), each compressed
+  to its user message and its final reply.
+
+Every message is cut to `CLAUDISH_CONTEXT_CHARS` characters (default 800), and
+every message left out is counted — in the header, and inline where the cut
+happened. The model is told the excerpt is partial instead of being left to
+assume it is the whole conversation:
 
 ```
-Recent conversation, oldest first — 6 of 12 messages; 6 earlier message(s) are not shown:
+Recent conversation, oldest first. It shows 8 of the 21 messages in this session; 13 message(s) are not shown.
 
-[user] …
-[assistant] …
+[user] Set up https://github.com/gvzdv/claudish-to-english
+
+[… 1 more reply in this exchange, not shown]
+
+[assistant] Plugin is installed. One blocker remains …
+
+[user] A, then: 1. fork the repo …
+
+[… 12 more replies in this exchange, not shown]
+
+[assistant] All three parts are done …
 ```
+
+Anchoring on the user's question is deliberate. A flat "last N messages" window
+breaks on an agentic turn: a long run of tool calls fills it with assistant
+status lines and pushes the question out entirely. Compressing older exchanges
+is deliberate too — the replies between a question and its final answer are
+tool-step preambles, which add length without grounding.
 
 Only prose reaches the model. Thinking blocks, tool calls, tool results,
 subagent (sidechain) lines, and meta lines are all dropped, and the message
 being rewritten is excluded. One assistant reply can span several transcript
-lines that share a message id; those are merged back into one message, so
-"5 messages" means 5 real turns, not 5 log lines.
+lines that share a message id; those are merged back into one message, so a
+counted "message" is a real turn, not a log line.
 
-A long run of tool calls can push the user's question out of a 5-message window
-— every recent message is then an assistant status line. To stop that,
-`CLAUDISH_CONTEXT_KEEP_USER` (default `1`) adds the newest user message back
-when the window holds none. Set it to `0` for a strict "last N" window.
+Set `CLAUDISH_CONTEXT=0` to send no context at all.
 
 ### Display modes
 
@@ -233,9 +253,10 @@ frontmatter, so the frontmatter stays on line 1 where parsers expect it.
 | `CLAUDISH_MODEL` | `gemma4:26b-mlx` | ollama model name. |
 | `CLAUDISH_OLLAMA` | `http://localhost:11434` | ollama base URL. |
 | `CLAUDISH_MIN_CHARS` | `200` | Skip messages/files whose prose (code stripped) is shorter than this. |
-| `CLAUDISH_CONTEXT_MSGS` | `5` | Recent user/assistant messages sent to the model as context (display hook). `0` = send none. |
+| `CLAUDISH_CONTEXT` | `1` | `1` = send recent conversation as context (display hook). `0` = send the message alone. |
+| `CLAUDISH_CONTEXT_TURNS` | `5` | Exchanges before the current one, each compressed to its user message and final reply. |
+| `CLAUDISH_CONTEXT_TURN_MSGS` | `3` | Replies kept from the **current** exchange, newest first. The user's question itself is always kept. |
 | `CLAUDISH_CONTEXT_CHARS` | `800` | Per-message truncation inside that context. |
-| `CLAUDISH_CONTEXT_KEEP_USER` | `1` | `1` = add the newest user message when the recent window holds none (long tool runs push it out). `0` = strict last-N window. |
 | `CLAUDISH_STUB` | `0` | `1` = deterministic stub instead of the model (for testing display mechanics). |
 | `CLAUDISH_TIMEOUT` | `45` | LLM client timeout for the **display** hook (seconds). Keep it below that hook's `timeout` (60s). |
 | `CLAUDISH_MD_TIMEOUT` | `150` | LLM client timeout for the **Markdown file** hook (seconds). Higher on purpose — a large model rewriting a long doc is slow. Keep it below the `PostToolUse` hook `timeout` (180s). |
@@ -290,7 +311,7 @@ plus the recent-conversation excerpt described above; tool results and file
 contents are not part of that excerpt, but a message may of course quote them. If
 you ever point `CLAUDISH_OLLAMA` at a remote/hosted endpoint, all of that would
 be sent off-box — don't do that unless you understand and accept it. Set
-`CLAUDISH_CONTEXT_MSGS=0` to send the message alone.
+`CLAUDISH_CONTEXT=0` to send the message alone.
 
 ---
 
