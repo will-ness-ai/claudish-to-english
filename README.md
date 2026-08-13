@@ -68,16 +68,15 @@ above.
 Directly from this repository (also serves its own marketplace):
 
 ```shell
-/plugin marketplace add gvzdv/claudish-to-english
+/plugin marketplace add will-ness-ai/claudish-to-english
 /plugin install claudish-to-english@gvzdv-plugins
 ```
 
-After review by the Anthropic team, the plugin will be available to install from the community marketplace:
+The marketplace still carries the upstream name `gvzdv-plugins`, which is why
+the second line reads that way. The source is this fork.
 
-```shell
-/plugin marketplace add anthropics/claude-plugins-community
-/plugin install claudish-to-english@claude-community
-```
+To install the upstream plugin instead — without this fork's conversation
+context and project vocabulary — use `gvzdv/claudish-to-english`.
 
 If the install summary says `Run /reload-plugins to activate.`, run that command.
 
