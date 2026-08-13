@@ -1,5 +1,13 @@
 # claudish-to-english
 
+> **Fork.** Original plugin by [Mike Gvozdev](https://github.com/gvzdv) at
+> [gvzdv/claudish-to-english](https://github.com/gvzdv/claudish-to-english), MIT
+> licensed. This fork is maintained by [Will Ness](https://github.com/will-ness-ai)
+> and adds conversation context and project vocabulary to the rewrite prompt —
+> see [How the display hook works](#how-the-display-hook-works) and
+> [Project vocabulary](#project-vocabulary). Versions carry a `-wn.N`
+> suffix so they are never mistaken for an upstream release.
+
 <p align="center">
   <img
     src="https://github.com/gvzdv/claudish-to-english/releases/download/assets/comparison.png"
@@ -362,4 +370,5 @@ claudish-to-english/
 
 ## License
 
-MIT — see [LICENSE](./LICENSE).
+MIT — see [LICENSE](./LICENSE). Copyright stays with Mike Gvozdev, who wrote the
+plugin; the fork's changes are copyright Will Ness under the same licence.
