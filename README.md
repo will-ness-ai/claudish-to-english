@@ -144,10 +144,33 @@ chunk 3 (final:true)  ──► reconstruct full message → call ollama once �
                           → delete the buffer
 ```
 
-On that final chunk it also reads the **original user question** from the
-transcript and passes it to the model as **context only** — to keep the rewrite
-on-topic. The model is told never to answer or repeat the question; it only
-rewrites the assistant's message.
+On that final chunk it also reads the **recent conversation** from the transcript
+and passes it to the model as **context only** — to keep the rewrite on-topic.
+The model is told never to answer or repeat that context; it only rewrites the
+assistant's message.
+
+The excerpt holds the last `CLAUDISH_CONTEXT_MSGS` messages (default 5), oldest
+first, and each one is cut to `CLAUDISH_CONTEXT_CHARS` characters (default 800).
+The header line states how many earlier messages are **not** shown, so the model
+knows the conversation is longer than the part it sees:
+
+```
+Recent conversation, oldest first — 6 of 12 messages; 6 earlier message(s) are not shown:
+
+[user] …
+[assistant] …
+```
+
+Only prose reaches the model. Thinking blocks, tool calls, tool results,
+subagent (sidechain) lines, and meta lines are all dropped, and the message
+being rewritten is excluded. One assistant reply can span several transcript
+lines that share a message id; those are merged back into one message, so
+"5 messages" means 5 real turns, not 5 log lines.
+
+A long run of tool calls can push the user's question out of a 5-message window
+— every recent message is then an assistant status line. To stop that,
+`CLAUDISH_CONTEXT_KEEP_USER` (default `1`) adds the newest user message back
+when the window holds none. Set it to `0` for a strict "last N" window.
 
 ### Display modes
 
@@ -210,6 +233,9 @@ frontmatter, so the frontmatter stays on line 1 where parsers expect it.
 | `CLAUDISH_MODEL` | `gemma4:26b-mlx` | ollama model name. |
 | `CLAUDISH_OLLAMA` | `http://localhost:11434` | ollama base URL. |
 | `CLAUDISH_MIN_CHARS` | `200` | Skip messages/files whose prose (code stripped) is shorter than this. |
+| `CLAUDISH_CONTEXT_MSGS` | `5` | Recent user/assistant messages sent to the model as context (display hook). `0` = send none. |
+| `CLAUDISH_CONTEXT_CHARS` | `800` | Per-message truncation inside that context. |
+| `CLAUDISH_CONTEXT_KEEP_USER` | `1` | `1` = add the newest user message when the recent window holds none (long tool runs push it out). `0` = strict last-N window. |
 | `CLAUDISH_STUB` | `0` | `1` = deterministic stub instead of the model (for testing display mechanics). |
 | `CLAUDISH_TIMEOUT` | `45` | LLM client timeout for the **display** hook (seconds). Keep it below that hook's `timeout` (60s). |
 | `CLAUDISH_MD_TIMEOUT` | `150` | LLM client timeout for the **Markdown file** hook (seconds). Higher on purpose — a large model rewriting a long doc is slow. Keep it below the `PostToolUse` hook `timeout` (180s). |
@@ -259,10 +285,12 @@ much slower for identical output quality on this simple task. Keep it off.
 ## Privacy / egress
 
 The rewriter runs **entirely locally** against ollama, so **no conversation
-content leaves your machine**. If you ever point `CLAUDISH_OLLAMA` at a
-remote/hosted endpoint, that context (which can include file contents from tool
-results) would be sent off-box — don't do that unless you understand and accept
-it.
+content leaves your machine**. Each display-hook call sends the assistant message
+plus the recent-conversation excerpt described above; tool results and file
+contents are not part of that excerpt, but a message may of course quote them. If
+you ever point `CLAUDISH_OLLAMA` at a remote/hosted endpoint, all of that would
+be sent off-box — don't do that unless you understand and accept it. Set
+`CLAUDISH_CONTEXT_MSGS=0` to send the message alone.
 
 ---
 

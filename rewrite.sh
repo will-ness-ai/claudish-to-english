@@ -13,11 +13,14 @@
 # message_id) and only call the LLM on the final chunk, once the whole
 # message is known.
 #
-# On the final chunk we also read the ORIGINAL USER QUESTION from
-# .transcript_path (the last real user message) and pass it to the model as
-# CONTEXT ONLY — it helps the rewrite stay on-topic. The model is told never
-# to rewrite, answer, or repeat the question; only the assistant message is
-# rewritten. Missing/unreadable transcript -> no context, still rewrites.
+# On the final chunk we also read the RECENT CONVERSATION from
+# .transcript_path (the last CLAUDISH_CONTEXT_MSGS user/assistant messages,
+# oldest first) and pass it to the model as CONTEXT ONLY — it helps the rewrite
+# stay on-topic. The excerpt tells the model how many earlier messages are not
+# shown, so it knows the conversation is longer than what it sees. The model is
+# told never to rewrite, answer, or repeat that context; only the assistant
+# message is rewritten. Missing/unreadable transcript -> no context, still
+# rewrites.
 #
 # FAIL-OPEN CONTRACT: on ANY problem (disabled, no jq, parse error, LLM down,
 # timeout, empty rewrite) we emit nothing and exit 0, which leaves Claude's
@@ -38,6 +41,13 @@
 #   CLAUDISH_STUB      1|0            deterministic stub instead of ollama
 #                                           (for display-mechanics testing)
 #   CLAUDISH_TIMEOUT   <seconds>      LLM client timeout (default 45)
+#   CLAUDISH_CONTEXT_MSGS  <n>        recent user/assistant messages sent as
+#                                          context; 0 sends none (default 5)
+#   CLAUDISH_CONTEXT_CHARS <n>        per-message truncation inside that
+#                                          context (default 800)
+#   CLAUDISH_CONTEXT_KEEP_USER 1|0    when the recent window holds no user
+#                                          message (long tool runs push it out),
+#                                          add the newest one anyway (default 1)
 #   CLAUDISH_DEBUG     1|0            write a debug log (default 0)
 #   CLAUDISH_NOTICE    1|0            once-per-session on-screen notice when the
 #                                           rewrite is skipped because ollama is
@@ -57,8 +67,16 @@ OLLAMA="${CLAUDISH_OLLAMA:-http://localhost:11434}"
 MIN_CHARS="${CLAUDISH_MIN_CHARS:-200}"
 STUB="${CLAUDISH_STUB:-0}"
 LLM_TIMEOUT="${CLAUDISH_TIMEOUT:-45}"
+CTX_MSGS="${CLAUDISH_CONTEXT_MSGS:-5}"
+CTX_CHARS="${CLAUDISH_CONTEXT_CHARS:-800}"
+CTX_KEEP_USER="${CLAUDISH_CONTEXT_KEEP_USER:-1}"
 DEBUG="${CLAUDISH_DEBUG:-0}"
 NOTICE="${CLAUDISH_NOTICE:-1}"
+
+# jq gets these as --argjson numbers, so a non-numeric value must not reach it.
+case "$CTX_MSGS"      in ''|*[!0-9]*) CTX_MSGS=5    ;; esac
+case "$CTX_CHARS"     in ''|*[!0-9]*) CTX_CHARS=800 ;; esac
+case "$CTX_KEEP_USER" in 0|1) ;; *) CTX_KEEP_USER=1 ;; esac
 
 BUF_ROOT="${TMPDIR:-/tmp}/claudish-to-english"
 SEP=$'\n\n────────────────────────\n💬 In plain English:\n\n'
@@ -156,15 +174,57 @@ if [ "$STUB" = "1" ]; then
 else
   sys="You rewrite the assistant's message into much simpler, plain English. Keep every fact, name, number, and file path. Use short sentences and everyday words. Leave fenced code blocks unchanged. Output ONLY the rewritten message with no preamble, labels, or commentary."
 
-  # Context only: the original user question the assistant is answering.
-  # Truncated to 800 codepoints inside jq (safe on multibyte boundaries).
-  userq=""
-  if [ -n "$tpath" ] && [ -f "$tpath" ]; then
-    userq="$(jq -rs '([ .[] | select(.type=="user" and (.message.content|type=="string") and (.isMeta!=true)) | .message.content ] | last // "") | .[0:800]' "$tpath" 2>/dev/null)"
+  # Context only: the recent conversation, oldest first. One assistant message
+  # spans several transcript lines that share .message.id, so lines are merged
+  # by id; blocks that are not text (thinking, tool_use, tool_result) hold no
+  # prose and drop out, as do sidechain (subagent) and meta lines. The message
+  # being rewritten is excluded — it is the payload, not context. Truncation
+  # happens inside jq, which is safe on multibyte boundaries.
+  convo=""
+  if [ -n "$tpath" ] && [ -f "$tpath" ] && [ "$CTX_MSGS" -gt 0 ]; then
+    convo="$(jq -rs --argjson n "$CTX_MSGS" --argjson c "$CTX_CHARS" \
+                    --argjson keepuser "$CTX_KEEP_USER" --arg mid "$mid" '
+      def txt:
+        if (.message.content | type) == "string" then .message.content
+        else [ .message.content[]? | select(.type == "text") | .text // "" ] | join("\n")
+        end;
+      [ .[]
+        | select((.type == "user" or .type == "assistant")
+                 and (.isMeta // false) == false
+                 and (.isSidechain // false) == false)
+        | { role: (.message.role // .type), id: (.message.id // ""), text: txt }
+        | select((.text | gsub("[[:space:]]"; "") | length) > 0)
+      ]
+      | reduce .[] as $m ([];
+          if length > 0 and $m.id != "" and .[-1].id == $m.id
+          then .[0:-1] + [ .[-1] | .text += "\n" + $m.text ]
+          else . + [$m]
+          end)
+      | map(select(.id != $mid))
+      | length as $total
+      | (if $total > $n then .[($total - $n):] else . end) as $recent
+      | ( if $keepuser == 1 and ([ $recent[] | select(.role == "user") ] | length) == 0
+          then ([ .[] | select(.role == "user") ] | if length > 0 then [ .[-1] ] else [] end) + $recent
+          else $recent
+          end ) as $shown
+      | ($total - ($shown | length)) as $omitted
+      | if ($shown | length) == 0 then ""
+        else
+          "Recent conversation, oldest first"
+          + (if $omitted > 0
+             then " — \($shown | length) of \($total) messages; \($omitted) earlier message(s) are not shown"
+             else " — the whole conversation so far"
+             end)
+          + ":\n\n"
+          + ( $shown
+              | map("[" + .role + "] "
+                    + (.text | if length > $c then .[0:$c] + " […truncated]" else . end))
+              | join("\n\n") )
+        end' "$tpath" 2>/dev/null)"
   fi
-  if [ -n "$userq" ]; then
-    sys="$sys"$'\n\n'"For context, the user asked the assistant: \"$userq\". Use this only to understand the message. Do NOT rewrite, answer, or repeat the user's question — rewrite only the assistant's message that follows."
-    dbg "context: userq_bytes=${#userq}"
+  if [ -n "$convo" ]; then
+    sys="$sys"$'\n\n'"$convo"$'\n\n'"Use this context only to understand the message. Do NOT rewrite, answer, or repeat any of it — rewrite only the assistant's message that follows."
+    dbg "context: convo_bytes=${#convo} msgs=$CTX_MSGS"
   fi
 
   req="$(jq -n --arg m "$MODEL" --arg s "$sys" --arg u "$full" \
