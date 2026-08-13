@@ -36,7 +36,7 @@ The fork changes one thing: what the **display hook** tells the local model.
 |---|---|---|---|
 | **Conversation** | Sends your last question. | Sends your newest question, the replies to it so far, and the [5 exchanges before that](#how-the-display-hook-works). Counts every message it leaves out. | One question is thin. The model rewrites an answer without knowing what came before it. |
 | **Project words** | Sends none. | Sends [`CONTEXT.md`](#project-vocabulary) (or `docs/CONTEXT.md`), capped, and says to keep those exact words. | Without it the rewrite changes your words. `display hook` came back as "display script"; `fails open` became "if the rewrite fails". |
-| **Style** | Asks for short sentences and everyday words. | Also asks for Simplified Technical English. | House style. This line goes last in the prompt. Higher up, "Re-pitch that" points at the wrong message, and the model rewrites a message from the context instead. |
+| **Style** | Asks for short sentences and everyday words. | Also asks for Simplified Technical English. | House style. The line goes last, next to the message it points at. |
 
 New settings: `CLAUDISH_CONTEXT`, `CLAUDISH_CONTEXT_TURNS`,
 `CLAUDISH_CONTEXT_TURN_MSGS`, `CLAUDISH_CONTEXT_CHARS`,
@@ -239,9 +239,10 @@ acceptable.
 The prompt then closes with a re-pitch instruction — *"The user doesn't
 understand. Re-pitch that: give me a little bit of context, talk in Simplified
 Technical English"* — and names `CONTEXT.md` in that sentence **only** when the
-file was actually found. It goes last on purpose: placed above the context
-blocks, "that" loses its referent and the model rewrites the nearest excerpt
-instead of the message on screen.
+file was actually found. It goes last so that it sits beside the message it
+points at. Placement was tested both ways — last, and above the context blocks —
+and `gemma4:26b-mlx` rewrote the correct message in 20 of 20 runs either way, so
+treat this as a choice of layout, not a fix for a known failure.
 
 Set `CLAUDISH_CONTEXT=0` to send no context at all — no excerpt, no `CONTEXT.md`.
 

@@ -290,9 +290,7 @@ else
   if [ -n "$doc" ] || [ -n "$convo" ]; then
     sys="$sys"$'\n\n'"Use the material above only to understand the message. Do NOT rewrite, answer, or repeat any of it — rewrite only the assistant's message that follows."
   fi
-  # Last, so it sits next to the message it points at. Placed above the context
-  # blocks, "Re-pitch that" loses its referent and the model rewrites the
-  # closest excerpt instead of the assistant's message.
+  # Last, so it sits next to the message it points at.
   sys="$sys"$'\n\n'"$repitch"
   dbg "context: convo_chars=${#convo} doc_chars=${#doc} turns=$CTX_TURNS turn_msgs=$CTX_TURN_MSGS"
 
