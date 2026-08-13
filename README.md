@@ -4,8 +4,7 @@
 > [gvzdv/claudish-to-english](https://github.com/gvzdv/claudish-to-english), MIT
 > licensed. This fork is maintained by [Will Ness](https://github.com/will-ness-ai)
 > and adds conversation context and project vocabulary to the rewrite prompt —
-> see [How the display hook works](#how-the-display-hook-works) and
-> [Project vocabulary](#project-vocabulary). Versions carry a `-wn.N`
+> see [What this fork changes](#what-this-fork-changes). Versions carry a `-wn.N`
 > suffix so they are never mistaken for an upstream release.
 
 <p align="center">
@@ -26,6 +25,26 @@ are written or edited (opt-in, off by default).
 > Status: working prototype. Every hook fails **open** — if anything goes wrong
 > (ollama down, timeout, missing dependency), you simply see Claude's original
 > text. The plugin can never swallow or corrupt an answer.
+
+---
+
+## What this fork changes
+
+Upstream sends the model two things: the assistant message, and the user's last
+question. This fork changes only what the **display hook** puts in the prompt.
+
+| Change | What it fixes |
+|---|---|
+| **Conversation context.** The user's newest question, the replies to it so far, and the [5 exchanges before it](#how-the-display-hook-works). Every message left out is counted. | A flat "last N messages" window breaks on an agentic turn: tool-call status lines fill it and push the question out. |
+| **[Project vocabulary](#project-vocabulary).** `CONTEXT.md` or `docs/CONTEXT.md`, capped, with an instruction to keep those exact terms. | Without it a rewrite flattens the words a project runs on. `display hook` came back as "display script", `fails open` as "if the rewrite fails". |
+| **A re-pitch instruction** closing the prompt, which asks for Simplified Technical English. | House style. It goes last on purpose — above the context blocks, "Re-pitch that" loses its referent and the model rewrites the wrong message. |
+
+New settings: `CLAUDISH_CONTEXT`, `CLAUDISH_CONTEXT_TURNS`,
+`CLAUDISH_CONTEXT_TURN_MSGS`, `CLAUDISH_CONTEXT_CHARS`,
+`CLAUDISH_CONTEXT_DOC_CHARS`. See [Configuration](#configuration-env-vars).
+
+Everything else is upstream's and unchanged: the fail-open contract, both display
+modes, the Markdown hook, and every other setting.
 
 ---
 
