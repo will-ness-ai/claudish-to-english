@@ -30,14 +30,13 @@ are written or edited (opt-in, off by default).
 
 ## What this fork changes
 
-Upstream sends the model two things: the assistant message, and the user's last
-question. This fork changes only what the **display hook** puts in the prompt.
+The fork changes one thing: what the **display hook** tells the local model.
 
-| Change | What it fixes |
-|---|---|
-| **Conversation context.** The user's newest question, the replies to it so far, and the [5 exchanges before it](#how-the-display-hook-works). Every message left out is counted. | A flat "last N messages" window breaks on an agentic turn: tool-call status lines fill it and push the question out. |
-| **[Project vocabulary](#project-vocabulary).** `CONTEXT.md` or `docs/CONTEXT.md`, capped, with an instruction to keep those exact terms. | Without it a rewrite flattens the words a project runs on. `display hook` came back as "display script", `fails open` as "if the rewrite fails". |
-| **A re-pitch instruction** closing the prompt, which asks for Simplified Technical English. | House style. It goes last on purpose — above the context blocks, "Re-pitch that" loses its referent and the model rewrites the wrong message. |
+| | Upstream | My fork | Why |
+|---|---|---|---|
+| **Conversation** | Sends your last question. | Sends your newest question, the replies to it so far, and the [5 exchanges before that](#how-the-display-hook-works). Counts every message it leaves out. | One question is thin. The model rewrites an answer without knowing what came before it. |
+| **Project words** | Sends none. | Sends [`CONTEXT.md`](#project-vocabulary) (or `docs/CONTEXT.md`), capped, and says to keep those exact words. | Without it the rewrite changes your words. `display hook` came back as "display script"; `fails open` became "if the rewrite fails". |
+| **Style** | Asks for short sentences and everyday words. | Also asks for Simplified Technical English. | House style. This line goes last in the prompt. Higher up, "Re-pitch that" points at the wrong message, and the model rewrites a message from the context instead. |
 
 New settings: `CLAUDISH_CONTEXT`, `CLAUDISH_CONTEXT_TURNS`,
 `CLAUDISH_CONTEXT_TURN_MSGS`, `CLAUDISH_CONTEXT_CHARS`,
