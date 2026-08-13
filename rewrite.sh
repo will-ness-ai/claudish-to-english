@@ -18,9 +18,12 @@
 # then the CLAUDISH_CONTEXT_TURNS exchanges before it, oldest first — and pass
 # it to the model as CONTEXT ONLY, which helps the rewrite stay on-topic. The
 # excerpt counts every message it leaves out, so the model knows the
-# conversation is longer than what it sees. The model is told never to rewrite,
-# answer, or repeat that context; only the assistant message is rewritten.
-# Missing/unreadable transcript -> no context, still rewrites.
+# conversation is longer than what it sees. When the project publishes a
+# CONTEXT.md (or docs/CONTEXT.md under the hook's cwd), its ubiquitous language
+# goes in too, so the rewrite keeps the project's own terms. The model is told
+# never to rewrite, answer, or repeat that context; only the assistant message
+# is rewritten. Missing/unreadable transcript or CONTEXT.md -> that part of the
+# context is skipped, and the rewrite still runs.
 #
 # FAIL-OPEN CONTRACT: on ANY problem (disabled, no jq, parse error, LLM down,
 # timeout, empty rewrite) we emit nothing and exit 0, which leaves Claude's
@@ -50,6 +53,9 @@
 #                                          newest first (default 3)
 #   CLAUDISH_CONTEXT_CHARS <n>        per-message truncation inside that
 #                                          context (default 800)
+#   CLAUDISH_CONTEXT_DOC_CHARS <n>    cap on the CONTEXT.md excerpt, which the
+#                                          model reads in full before it writes
+#                                          a word (default 4000)
 #   CLAUDISH_DEBUG     1|0            write a debug log (default 0)
 #   CLAUDISH_NOTICE    1|0            once-per-session on-screen notice when the
 #                                           rewrite is skipped because ollama is
@@ -73,6 +79,7 @@ CTX_ON="${CLAUDISH_CONTEXT:-1}"
 CTX_TURNS="${CLAUDISH_CONTEXT_TURNS:-5}"
 CTX_TURN_MSGS="${CLAUDISH_CONTEXT_TURN_MSGS:-3}"
 CTX_CHARS="${CLAUDISH_CONTEXT_CHARS:-800}"
+CTX_DOC_CHARS="${CLAUDISH_CONTEXT_DOC_CHARS:-4000}"
 DEBUG="${CLAUDISH_DEBUG:-0}"
 NOTICE="${CLAUDISH_NOTICE:-1}"
 
@@ -81,6 +88,7 @@ case "$CTX_ON"        in 0|1) ;; *) CTX_ON=1        ;; esac
 case "$CTX_TURNS"     in ''|*[!0-9]*) CTX_TURNS=5   ;; esac
 case "$CTX_TURN_MSGS" in ''|*[!0-9]*) CTX_TURN_MSGS=3 ;; esac
 case "$CTX_CHARS"     in ''|*[!0-9]*) CTX_CHARS=800 ;; esac
+case "$CTX_DOC_CHARS" in ''|*[!0-9]*) CTX_DOC_CHARS=4000 ;; esac
 
 BUF_ROOT="${TMPDIR:-/tmp}/claudish-to-english"
 SEP=$'\n\n────────────────────────\n💬 In plain English:\n\n'
@@ -121,6 +129,8 @@ sid="$(printf '%s' "$payload"   | jq -r '.session_id // "nosession"' 2>/dev/null
 idx="$(printf '%s' "$payload"   | jq -r '(.index // 0) | tostring' 2>/dev/null)"
 final="$(printf '%s' "$payload" | jq -r '.final // false' 2>/dev/null)"
 tpath="$(printf '%s' "$payload" | jq -r '.transcript_path // empty' 2>/dev/null)"
+cwd="$(printf '%s' "$payload"   | jq -r '.cwd // empty' 2>/dev/null)"
+[ -n "$cwd" ] || cwd="$PWD"
 [ -n "$mid" ] || pass_through
 case "$idx" in ''|*[!0-9]*) idx=0 ;; esac
 
@@ -177,6 +187,29 @@ if [ "$STUB" = "1" ]; then
   dbg "stub rewrite"
 else
   sys="You rewrite the assistant's message into much simpler, plain English. Keep every fact, name, number, and file path. Use short sentences and everyday words. Leave fenced code blocks unchanged. Output ONLY the rewritten message with no preamble, labels, or commentary."
+
+  # The project's ubiquitous language, when it publishes one. Without it a
+  # rewrite flattens the project's own terms — "display hook" comes back as
+  # "display script". Capped, because these files run to tens of KB and every
+  # character is prompt the model reads before it writes a word.
+  doc=""
+  if [ "$CTX_ON" = "1" ]; then
+    for f in "$cwd/CONTEXT.md" "$cwd/docs/CONTEXT.md"; do
+      [ -f "$f" ] || continue
+      doc="$(jq -Rsr --argjson c "$CTX_DOC_CHARS" \
+             'if length > $c then .[0:$c] + "\n\n[… CONTEXT.md truncated]" else . end' \
+             "$f" 2>/dev/null)"
+      [ -n "$doc" ] && { dbg "context doc: $f chars=${#doc}"; break; }
+    done
+  fi
+
+  repitch="The user doesn't understand. Re-pitch that: give me a little bit of context, talk in Simplified Technical English"
+  if [ -n "$doc" ]; then
+    repitch="$repitch, and use the ubiquitous language from CONTEXT.md."
+  else
+    repitch="$repitch."
+  fi
+  [ -n "$doc" ] && sys="$sys"$'\n\n'"The project's CONTEXT.md follows. It defines the ubiquitous language — keep those exact terms in the rewrite."$'\n\n'"$doc"
 
   # Context only: the current exchange (the user's newest question and the
   # replies to it so far), plus the CLAUDISH_CONTEXT_TURNS exchanges before it.
@@ -253,10 +286,15 @@ else
           + ([ .[].lines[] ] | join("\n\n"))
         end' "$tpath" 2>/dev/null)"
   fi
-  if [ -n "$convo" ]; then
-    sys="$sys"$'\n\n'"$convo"$'\n\n'"Use this context only to understand the message. Do NOT rewrite, answer, or repeat any of it — rewrite only the assistant's message that follows."
-    dbg "context: convo_bytes=${#convo} turns=$CTX_TURNS turn_msgs=$CTX_TURN_MSGS"
+  [ -n "$convo" ] && sys="$sys"$'\n\n'"$convo"
+  if [ -n "$doc" ] || [ -n "$convo" ]; then
+    sys="$sys"$'\n\n'"Use the material above only to understand the message. Do NOT rewrite, answer, or repeat any of it — rewrite only the assistant's message that follows."
   fi
+  # Last, so it sits next to the message it points at. Placed above the context
+  # blocks, "Re-pitch that" loses its referent and the model rewrites the
+  # closest excerpt instead of the assistant's message.
+  sys="$sys"$'\n\n'"$repitch"
+  dbg "context: convo_chars=${#convo} doc_chars=${#doc} turns=$CTX_TURNS turn_msgs=$CTX_TURN_MSGS"
 
   req="$(jq -n --arg m "$MODEL" --arg s "$sys" --arg u "$full" \
         '{model:$m,stream:false,think:false,options:{temperature:0.3},messages:[{role:"system",content:$s},{role:"user",content:$u}]}' 2>/dev/null)"

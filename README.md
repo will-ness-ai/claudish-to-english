@@ -190,7 +190,35 @@ being rewritten is excluded. One assistant reply can span several transcript
 lines that share a message id; those are merged back into one message, so a
 counted "message" is a real turn, not a log line.
 
-Set `CLAUDISH_CONTEXT=0` to send no context at all.
+### Project vocabulary
+
+If `CONTEXT.md` or `docs/CONTEXT.md` sits in the hook's working directory, its
+first `CLAUDISH_CONTEXT_DOC_CHARS` characters (default 4000) go into the prompt
+as the project's **ubiquitous language**, and the model is told to keep those
+exact terms.
+
+Without it a rewrite quietly flattens the words a project runs on. Measured on
+this repo's own glossary, same message, same model:
+
+| | Rewrite |
+|---|---|
+| No `CONTEXT.md` | "…**updated the display hook**. If the rewrite fails, you will see the original text" — `fail open` is gone |
+| With `CONTEXT.md` | "…changed the **display hook**. If there is a problem, the **rewrite** will **fail open**" |
+
+The cap exists because the model reads every character of that file before it
+writes a word. On an M4 Pro against `gemma4:26b-mlx`: 4000 characters cost 5s,
+12000 cost 8s, and a whole 29KB glossary cost 13s. All fit inside the 45s
+`CLAUDISH_TIMEOUT`, so raise the cap if your glossary is long and the wait is
+acceptable.
+
+The prompt then closes with a re-pitch instruction — *"The user doesn't
+understand. Re-pitch that: give me a little bit of context, talk in Simplified
+Technical English"* — and names `CONTEXT.md` in that sentence **only** when the
+file was actually found. It goes last on purpose: placed above the context
+blocks, "that" loses its referent and the model rewrites the nearest excerpt
+instead of the message on screen.
+
+Set `CLAUDISH_CONTEXT=0` to send no context at all — no excerpt, no `CONTEXT.md`.
 
 ### Display modes
 
@@ -257,6 +285,7 @@ frontmatter, so the frontmatter stays on line 1 where parsers expect it.
 | `CLAUDISH_CONTEXT_TURNS` | `5` | Exchanges before the current one, each compressed to its user message and final reply. |
 | `CLAUDISH_CONTEXT_TURN_MSGS` | `3` | Replies kept from the **current** exchange, newest first. The user's question itself is always kept. |
 | `CLAUDISH_CONTEXT_CHARS` | `800` | Per-message truncation inside that context. |
+| `CLAUDISH_CONTEXT_DOC_CHARS` | `4000` | Cap on the `CONTEXT.md` / `docs/CONTEXT.md` excerpt sent as project vocabulary. Costs latency — see [Project vocabulary](#project-vocabulary). |
 | `CLAUDISH_STUB` | `0` | `1` = deterministic stub instead of the model (for testing display mechanics). |
 | `CLAUDISH_TIMEOUT` | `45` | LLM client timeout for the **display** hook (seconds). Keep it below that hook's `timeout` (60s). |
 | `CLAUDISH_MD_TIMEOUT` | `150` | LLM client timeout for the **Markdown file** hook (seconds). Higher on purpose — a large model rewriting a long doc is slow. Keep it below the `PostToolUse` hook `timeout` (180s). |
@@ -306,9 +335,10 @@ much slower for identical output quality on this simple task. Keep it off.
 ## Privacy / egress
 
 The rewriter runs **entirely locally** against ollama, so **no conversation
-content leaves your machine**. Each display-hook call sends the assistant message
-plus the recent-conversation excerpt described above; tool results and file
-contents are not part of that excerpt, but a message may of course quote them. If
+content leaves your machine**. Each display-hook call sends the assistant message,
+the recent-conversation excerpt described above, and — when the project has one
+— the capped `CONTEXT.md` excerpt; tool results and file contents are not part
+of the conversation excerpt, but a message may of course quote them. If
 you ever point `CLAUDISH_OLLAMA` at a remote/hosted endpoint, all of that would
 be sent off-box — don't do that unless you understand and accept it. Set
 `CLAUDISH_CONTEXT=0` to send the message alone.
